@@ -1,6 +1,7 @@
 use arrow_ipc::writer::StreamWriter;
-use arrow_json::ReaderBuilder;
+use arrow_json::{writer::record_batches_to_json_rows, ReaderBuilder};
 use datafusion::arrow::{self, datatypes::Schema, record_batch::RecordBatch};
+use serde_json::map::Map as JsonMap;
 use serde_json::Value;
 use std::{
     fs::{File, OpenOptions},
@@ -21,7 +22,7 @@ impl RwFile {
     }
 }
 
-pub async fn get_or_create_arrow(name: impl AsRef<Path>, schema: &Schema) -> Arc<RwFile> {
+pub async fn get_or_create_arrow_writer(name: impl AsRef<Path>, schema: &Schema) -> Arc<RwFile> {
     let f = OpenOptions::new()
         .write(true)
         .create(true)
@@ -40,7 +41,7 @@ pub async fn write_file_arrow(
     schema: &Schema,
 ) -> Result<(), anyhow::Error> {
     let batch = json_to_recordbatch(schema, record)?;
-    let file = get_or_create_arrow(file_name, schema).await;
+    let file = get_or_create_arrow_writer(file_name, schema).await;
     file.write_arrow(batch).await?;
     Ok(())
 }
@@ -56,4 +57,10 @@ pub fn json_to_recordbatch(
         .unwrap();
     decoder.serialize(record)?;
     Ok(decoder.flush()?.unwrap())
+}
+
+pub fn recordbatch_to_jsons(
+    batchs: &[&RecordBatch],
+) -> Result<Vec<JsonMap<String, Value>>, anyhow::Error> {
+    Ok(record_batches_to_json_rows(batchs)?)
 }

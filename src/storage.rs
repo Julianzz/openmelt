@@ -25,4 +25,8 @@ impl Storage {
         std::fs::create_dir_all(path)?;
         Ok(())
     }
+
+    pub fn root(&self) -> &str {
+        self.root.as_os_str().to_str().unwrap()
+    }
 }
