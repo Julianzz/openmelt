@@ -1,11 +1,12 @@
 use std::{ops::Deref, sync::Arc};
 
-use arrow_json::reader::infer_json_schema_from_iterator;
 use datafusion::arrow::datatypes::Schema;
 use serde_json::Value;
 
+use crate::fusion::schema;
+#[derive(Clone, Debug)]
 pub struct MeltSchema {
-    schema: Arc<Schema>,
+    pub schema: Arc<Schema>,
 }
 
 impl AsRef<Arc<Schema>> for MeltSchema {
@@ -29,9 +30,7 @@ impl MeltSchema {
 }
 
 pub fn infer_schema(vals: &[Value]) -> Result<MeltSchema, anyhow::Error> {
-    // let reader = BufReader::new(body.as_ref());
-    let iter = vals.iter().map(Ok);
-    let schema = infer_json_schema_from_iterator(iter)?;
+    let schema = schema::infer_schema(&vals)?;
     Ok(MeltSchema {
         schema: Arc::new(schema),
     })

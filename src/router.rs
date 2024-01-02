@@ -1,7 +1,5 @@
 use actix_web::{get, http::Error, post, web, HttpResponse, Responder};
-
 use serde_derive::{Deserialize, Serialize};
-use utoipa::openapi::security::Http;
 
 use crate::app;
 

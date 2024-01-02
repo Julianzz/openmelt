@@ -1,4 +1,4 @@
-use actix_web::web::*;
+use actix_web::web;
 use ahash::AHashMap;
 use anyhow::*;
 
@@ -7,18 +7,16 @@ use datafusion::arrow::{datatypes::Int64Type, record_batch::RecordBatch};
 use serde_derive::{Deserialize, Serialize};
 
 use crate::{
-    arrow::{self, recordbatch_to_jsons},
-    compute,
-    consts::*,
+    config::*,
     exec::{self, Query},
+    fusion::compute,
+    fusion::{parquet, recordbatch},
     id_gen::gen_id,
-    json_utils::{self, parse_timestamp},
     meta::{FileMeta, MetaService},
-    parquet_utils, schema,
-    schema::MeltSchema,
+    schema::{infer_schema, MeltSchema},
     storage::Storage,
+    utils::{json, time::parse_timestamp},
 };
-
 use serde_json::Value;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -54,13 +52,13 @@ impl IngestService {
         Ok((stamp, val))
     }
 
-    pub async fn bulk(&self, table_name: &str, body: Bytes) -> Result<(), anyhow::Error> {
-        let records = json_utils::parse_lines(body)?;
+    pub async fn bulk(&self, table_name: &str, body: web::Bytes) -> Result<(), anyhow::Error> {
+        let records = json::parse_lines(body)?;
         self.ingest_(table_name, records).await
     }
 
-    pub async fn ingest(&self, table_name: &str, body: Bytes) -> Result<(), anyhow::Error> {
-        let records = json_utils::parse_json(body)?;
+    pub async fn ingest(&self, table_name: &str, body: web::Bytes) -> Result<(), anyhow::Error> {
+        let records = json::parse_json(body)?;
         self.ingest_(table_name, records).await?;
 
         Ok(())
@@ -96,7 +94,7 @@ impl IngestService {
         let partitions = self.partition_records(records)?;
         for (partition, records) in partitions {
             //infer schema
-            let schema = schema::infer_schema(&records)?;
+            let schema = infer_schema(&records)?;
             self.write_partition(table_name, &partition, &schema, records)
                 .await?;
         }
@@ -110,19 +108,15 @@ impl IngestService {
         schema: &MeltSchema,
         records: Vec<Value>,
     ) -> Result<(), anyhow::Error> {
-        let batch = arrow::json_to_recordbatch(schema, &records)?;
-
         let partition_path = format!("{table_name}/{partition}");
         self.storage.ensure_dir(&partition_path)?;
+
         let segment_id = gen_id();
         let filename = self.parquet_file_path(&partition_path, &segment_id);
-        let mut datas = Vec::new();
-        let mut writer: parquet::arrow::ArrowWriter<&mut Vec<u8>> =
-            parquet_utils::new_parquet_writer(&mut datas, schema)?;
-        // arrow::write_file_arrow(filename, &records, schema.as_ref()).await?
-        writer.write(&batch)?;
-        writer.close()?;
 
+        // write dato
+        let batch = recordbatch::json_to_recordbatch(schema, &records)?;
+        let datas = parquet::write_recordbatch(schema.schema.clone(), &batch)?;
         self.storage.put(&filename, datas.into()).await?;
 
         //write schema
@@ -130,8 +124,9 @@ impl IngestService {
         self.storage
             .put(&filename, schema.serialize()?.into())
             .await?;
-        let (min_ts, max_ts) = compute::compute_min_max::<Int64Type>(&batch, TIMPSTAMP_FIELD_NAME);
 
+        // write meta
+        let (min_ts, max_ts) = compute::compute_min_max::<Int64Type>(&batch, TIMPSTAMP_FIELD_NAME);
         self.meta.add_file(
             table_name,
             FileMeta::new(partition.into(), segment_id.into(), min_ts, max_ts),
@@ -148,7 +143,7 @@ impl IngestService {
     ) -> Result<Response, anyhow::Error> {
         let batches = self.query_(table_name, s, min_ts, max_ts).await?;
         let batches = batches.iter().collect::<Vec<_>>();
-        let batches = recordbatch_to_jsons(&batches)?;
+        let batches = recordbatch::recordbatch_to_jsons(&batches)?;
         let batches: Vec<Value> = batches
             .into_iter()
             .filter(|v| !v.is_empty())
@@ -190,7 +185,13 @@ impl IngestService {
 #[cfg(test)]
 mod tests {
 
-    use crate::{arrow::recordbatch_to_jsons, storage::Storage, *};
+    use crate::{
+        fusion::recordbatch::{self, recordbatch_to_jsons},
+        fusion::{compute, schema},
+        ingest,
+        storage::Storage,
+        utils::json,
+    };
     use actix_web::web::Bytes;
 
     use datafusion::arrow::datatypes::Int64Type;
@@ -260,9 +261,9 @@ mod tests {
         // let name = "test";
         let data = Bytes::from(data);
         let s = build_ingest_service();
-        let values = json_utils::parse_json(data).unwrap();
+        let values = json::parse_json(data).unwrap();
         let schema = schema::infer_schema(&values).unwrap();
-        let batch = arrow::json_to_recordbatch(&schema, &values).unwrap();
+        let batch = recordbatch::json_to_recordbatch(&schema, &values).unwrap();
 
         let (min, max) = compute::compute_min_max::<Int64Type>(&batch, "a");
         assert_eq!(min, 1);
